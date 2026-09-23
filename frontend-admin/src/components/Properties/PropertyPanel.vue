@@ -76,12 +76,34 @@
         <div v-if="element.type === 'image'" class="property-group">
           <div class="group-title">图片属性</div>
           <el-form-item label="图片">
-            <el-upload action="#" :auto-upload="false" :show-file-list="false" accept="image/*" @change="handleImageUpload">
-              <el-button type="primary" size="small">选择图片</el-button>
+            <el-upload
+              ref="uploadRef"
+              action="#"
+              :auto-upload="false"
+              :show-file-list="false"
+              accept="image/*"
+              :disabled="isCurrentUploading"
+              @change="handleImageUpload"
+            >
+              <el-button type="primary" size="small" :loading="isCurrentUploading">
+                {{ isCurrentUploading ? '读取中…' : '选择图片' }}
+              </el-button>
             </el-upload>
           </el-form-item>
+          <div v-if="isCurrentUploading" class="image-status">
+            图片读取中…读取结果只会写入本元件（{{ currentElementLabel }}），此时切换选中项不影响。
+          </div>
+          <div v-if="otherUploadingElements.length" class="image-status">
+            另有元件正在读取图片：{{ otherUploadingElements.join('、') }}；其图片只会写入各自元件，不会改变当前预览。
+          </div>
           <div v-if="element.imageData" class="image-preview">
             <img :src="element.imageData" alt="预览" />
+          </div>
+          <div v-if="element.imageName" class="image-name" :title="element.imageName">
+            当前图片文件：{{ element.imageName }}
+          </div>
+          <div class="image-tip">
+            预览始终显示当前选中元件的图片；若与图层列表名称对不上，是因为图层名称按“类型+创建序号”命名（有文件名时附文件名），并不跟随选中项变化。
           </div>
         </div>
 
@@ -193,7 +215,7 @@
 </template>
 
 <script setup>
-import { computed, reactive, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { useCanvasStore } from '@/stores/canvas'
 import { ElMessage } from 'element-plus'
 
@@ -252,13 +274,48 @@ const updateProp = (key) => {
   }
 }
 
-const handleImageUpload = (file) => {
-  const reader = new FileReader()
-  reader.onload = (e) => {
-    store.updateElement(element.value.id, { imageData: e.target.result })
-    ElMessage.success('图片已上传')
+const uploadRef = ref(null)
+
+const typeNames = {
+  text: '文本', rect: '矩形', circle: '圆形', line: '线条',
+  image: '图片', barcode: '条码', qrcode: '二维码', table: '表格'
+}
+
+// 当前选中元件是否正在读取图片
+const isCurrentUploading = computed(() =>
+  element.value ? store.isImageUploading(element.value.id) : false
+)
+
+// 当前选中元件的图层名称（与图层列表保持一致，便于用户核对）
+const currentElementLabel = computed(() => {
+  if (!element.value) return ''
+  const index = store.getElementIndex(element.value)
+  return `${typeNames[element.value.type] || element.value.type} ${index}`
+})
+
+// 其他正在上传图片的元件名称，用于解释“预览为什么没变 / 图去哪了”
+const otherUploadingElements = computed(() => {
+  const currentId = element.value?.id
+  return store.elements
+    .filter(el => el.type === 'image' && el.id !== currentId && store.isImageUploading(el.id))
+    .map(el => `${typeNames.image} ${store.getElementIndex(el)}`)
+})
+
+const handleImageUpload = (uploadFile) => {
+  // 关键：在发起选择的当下锁定元件 id，
+  // 读取（尤其大图）期间即使选中项变化，结果也只会写入这个元件
+  const targetId = element.value?.id
+  if (!targetId) return
+
+  const file = uploadFile?.raw
+  if (file) {
+    store.uploadImage(targetId, file)
   }
-  reader.readAsDataURL(file.raw)
+  // 清空内部文件列表并重置 input 的 value，
+  // 这样重复挑选同一个文件也会再次触发 change
+  uploadRef.value?.clearFiles()
+  const inputEl = uploadRef.value?.$el?.querySelector('input[type="file"]')
+  if (inputEl) inputEl.value = ''
 }
 
 const getCellText = (row, col) => {
@@ -356,6 +413,20 @@ const remove = () => {
 .image-preview {
   margin-top: 8px; padding: 8px; background: #f5f7fa; border-radius: 4px;
   img { max-width: 100%; max-height: 100px; display: block; margin: 0 auto; }
+}
+
+.image-name {
+  margin-top: 6px; font-size: 11px; color: #606266;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.image-status {
+  margin-top: 6px; padding: 4px 8px; font-size: 11px; line-height: 1.5;
+  color: #b88230; background: #fdf6ec; border-radius: 4px;
+}
+
+.image-tip {
+  margin-top: 6px; font-size: 11px; line-height: 1.5; color: #909399;
 }
 
 .align-buttons {
