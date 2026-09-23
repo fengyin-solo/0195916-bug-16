@@ -76,12 +76,22 @@
         <div v-if="element.type === 'image'" class="property-group">
           <div class="group-title">图片属性</div>
           <el-form-item label="图片">
-            <el-upload action="#" :auto-upload="false" :show-file-list="false" accept="image/*" @change="handleImageUpload">
-              <el-button type="primary" size="small">选择图片</el-button>
+            <el-upload action="#" :auto-upload="false" :show-file-list="false" accept="image/*" :on-change="handleImageUpload">
+              <el-button type="primary" size="small" :loading="imageUploading">
+                {{ imageUploading ? '读取中…' : '选择图片' }}
+              </el-button>
             </el-upload>
           </el-form-item>
+          <div class="image-status">
+            <span v-if="imageUploading" class="status-loading">图片读取中，可继续操作其他元件，完成后只会替换本元件（{{ element.imageName || '未命名' }}）的图片。</span>
+            <span v-else-if="element.imageData" class="status-ok">已绑定图片：{{ element.imageName || '未命名图片' }}</span>
+            <span v-else class="status-empty">尚未选择图片，当前为空。</span>
+          </div>
           <div v-if="element.imageData" class="image-preview">
-            <img :src="element.imageData" alt="预览" />
+            <img :src="element.imageData" :alt="element.imageName || '预览'" />
+          </div>
+          <div class="image-hint">
+            预览始终来自此元件自身保存的图片数据；读取期间切换选中其他元件，图片也只会落到发起选择的这一个元件上。
           </div>
         </div>
 
@@ -196,6 +206,7 @@
 import { computed, reactive, watch } from 'vue'
 import { useCanvasStore } from '@/stores/canvas'
 import { ElMessage } from 'element-plus'
+import { pickImageFile, readImageToElement } from '@/utils/imageLoader'
 
 const barcodeFormats = [
   { value: 'CODE128', label: 'Code 128' },
@@ -252,13 +263,30 @@ const updateProp = (key) => {
   }
 }
 
-const handleImageUpload = (file) => {
-  const reader = new FileReader()
-  reader.onload = (e) => {
-    store.updateElement(element.value.id, { imageData: e.target.result })
-    ElMessage.success('图片已上传')
-  }
-  reader.readAsDataURL(file.raw)
+// 当前选中图片元件是否正在读取（跟随当前面板展示的元件）
+const imageUploading = computed(() =>
+  element.value?.type === 'image' && store.isImageUploading(element.value.id)
+)
+
+const handleImageUpload = (uploadFile) => {
+  // 在发起选择的这一刻同步捕获目标元件 id；之后异步读取期间，
+  // 即使用户点选了画布上的其他元件，结果也只写回这个 id
+  const targetId = element.value?.id
+  if (!targetId) return
+
+  const file = pickImageFile(uploadFile?.raw)
+  // 用户取消选择或文件类型不合法：不做任何写入，也不报错
+  if (!file) return
+
+  // 统一走共享读取逻辑：结果只写回发起时快照的 targetId
+  readImageToElement(file, targetId, {
+    onStart: (id) => store.setImageUploading(id, true),
+    onLoad: (id, updates) => {
+      // 读取期间元件若已被删除则放弃写入；绝不使用“当前选中项”的 id
+      if (store.hasElement(id)) store.updateElement(id, updates)
+    },
+    onFinish: (id) => store.setImageUploading(id, false)
+  })
 }
 
 const getCellText = (row, col) => {
@@ -356,6 +384,17 @@ const remove = () => {
 .image-preview {
   margin-top: 8px; padding: 8px; background: #f5f7fa; border-radius: 4px;
   img { max-width: 100%; max-height: 100px; display: block; margin: 0 auto; }
+}
+
+.image-status {
+  font-size: 11px; line-height: 1.5; word-break: break-all;
+  .status-loading { color: #409eff; }
+  .status-ok { color: #67c23a; }
+  .status-empty { color: #909399; }
+}
+
+.image-hint {
+  margin-top: 6px; font-size: 11px; line-height: 1.5; color: #909399;
 }
 
 .align-buttons {

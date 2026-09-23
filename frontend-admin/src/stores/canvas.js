@@ -1,7 +1,9 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
+import { ElMessage } from 'element-plus'
 
 const MM_TO_DOT = 8
+const STORAGE_KEY = 'label-editor-canvas'
 
 export const useCanvasStore = defineStore('canvas', () => {
   const canvasWidth = ref(80)
@@ -10,7 +12,54 @@ export const useCanvasStore = defineStore('canvas', () => {
   const elements = ref([])
   const selectedElementId = ref(null)
   const selectedElementIds = ref([])
+  // 正在读取图片的元件 id 集合：读取与元件一一绑定，切换选中项不影响
+  const uploadingImageIds = ref([])
   let elementIdCounter = 0
+
+  // 启动时恢复上次保存的画布（图片 dataURL 也在其中，刷新后仍留在原元件上）
+  function restoreState() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY)
+      if (!raw) return
+      const saved = JSON.parse(raw)
+      if (Array.isArray(saved.elements)) elements.value = saved.elements
+      if (Number.isFinite(saved.canvasWidth)) canvasWidth.value = saved.canvasWidth
+      if (Number.isFinite(saved.canvasHeight)) canvasHeight.value = saved.canvasHeight
+      elementIdCounter = saved.elementIdCounter || 0
+      // 恢复后选中项重置，避免选中已不存在的元件
+      selectedElementId.value = null
+      selectedElementIds.value = []
+    } catch (err) {
+      console.warn('恢复画布数据失败:', err)
+    }
+  }
+
+  let saveTimer = null
+  // 元件数据变化后防抖写入 localStorage；图片可能很大，不做高频写入
+  watch(
+    [elements, canvasWidth, canvasHeight],
+    () => {
+      clearTimeout(saveTimer)
+      saveTimer = setTimeout(() => {
+        try {
+          localStorage.setItem(
+            STORAGE_KEY,
+            JSON.stringify({
+              elements: elements.value,
+              canvasWidth: canvasWidth.value,
+              canvasHeight: canvasHeight.value,
+              elementIdCounter
+            })
+          )
+        } catch (err) {
+          // 大图 dataURL 可能超出存储配额，提示但不影响画布中的使用
+          console.warn('保存画布数据失败:', err)
+          ElMessage.warning?.('图片较大，浏览器本地空间不足，刷新后可能无法保留该图片')
+        }
+      }, 500)
+    },
+    { deep: true }
+  )
 
   const canvasPixelWidth = computed(() => canvasWidth.value * MM_TO_DOT)
   const canvasPixelHeight = computed(() => canvasHeight.value * MM_TO_DOT)
@@ -46,6 +95,10 @@ export const useCanvasStore = defineStore('canvas', () => {
       locked: false,
       visible: true
     }
+    // 图片元件不预填远程图片，未选择时明确保持为空
+    if (newElement.type === 'image' && newElement.src) {
+      delete newElement.src
+    }
     elements.value.push(newElement)
     selectElement(id)
     return id
@@ -58,12 +111,30 @@ export const useCanvasStore = defineStore('canvas', () => {
     }
   }
 
+  // 异步上传回调使用：确认发起选择的元件仍然存在，不存在则放弃写入
+  function hasElement(id) {
+    return elements.value.some(el => el.id === id)
+  }
+
+  function setImageUploading(id, uploading) {
+    if (uploading) {
+      if (!uploadingImageIds.value.includes(id)) uploadingImageIds.value.push(id)
+    } else {
+      uploadingImageIds.value = uploadingImageIds.value.filter(eid => eid !== id)
+    }
+  }
+
+  function isImageUploading(id) {
+    return uploadingImageIds.value.includes(id)
+  }
+
   function deleteElement(id) {
     const index = elements.value.findIndex(el => el.id === id)
     if (index !== -1) {
       elements.value.splice(index, 1)
+      setImageUploading(id, false)
       selectedElementIds.value = selectedElementIds.value.filter(eid => eid !== id)
-      
+
       // 删除后选中第一个元件
       if (elements.value.length > 0) {
         const firstElement = elements.value[elements.value.length - 1]
@@ -158,9 +229,12 @@ export const useCanvasStore = defineStore('canvas', () => {
 
   function clearCanvas() {
     elements.value = []
+    uploadingImageIds.value = []
     selectedElementId.value = null
     selectedElementIds.value = []
   }
+
+  restoreState()
 
   return {
     canvasWidth,
@@ -169,6 +243,7 @@ export const useCanvasStore = defineStore('canvas', () => {
     elements,
     selectedElementId,
     selectedElementIds,
+    uploadingImageIds,
     canvasPixelWidth,
     canvasPixelHeight,
     selectedElement,
@@ -177,6 +252,9 @@ export const useCanvasStore = defineStore('canvas', () => {
     setScale,
     addElement,
     updateElement,
+    hasElement,
+    setImageUploading,
+    isImageUploading,
     deleteElement,
     selectElement,
     clearSelection,
